@@ -107,6 +107,8 @@ def run_nerf_for_model(model, x, direction):
 
 def render(radiance_field, depth, dir):
     """Returns rbg map"""
+    rgb_color = torch.sigmoid(radiance_field[..., :3])
+    sigma = torch.nn.functional.relu(radiance_field[..., 3])
     return
 
 def predict_coarse_then_fine(coarse_model, fine_model, origin, direction):
