@@ -14,6 +14,9 @@ for filename in os.listdir("./training_set"):
         training_images.append(img)
 
 
+data = np.load('data.npy')
+
+
 # print(images[0])
 # print(images[0].shape)
 # print(images[0][100,100])
