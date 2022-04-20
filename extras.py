@@ -21,7 +21,7 @@ def ray(height: int, width: int, focal_length: int, camera2world) -> Tuple[torch
     # Origin of rays passing through center of each pixel is the same. In camera
     # coordinates the origin is (0, 0, 0). To transform this origin to world 
     # coordinates we will multiply it by the camera-to-world matrix (3X4)
-    camera2world = camera2world.detach().numpy()
+    camera2world = camera2world.cpu().detach().numpy()
     camera2world = camera2world.reshape(4,4)
     origin = np.zeros((height, width, 3))
     #print(camera2world.shape)
@@ -46,15 +46,7 @@ def ray(height: int, width: int, focal_length: int, camera2world) -> Tuple[torch
     return torch.from_numpy(origin), torch.from_numpy(direction)
 
 
-def tester_rays(H, W, focal, c2w):
-    """Get ray origins, directions from a pinhole camera."""
-    i, j = np.meshgrid(np.arange(W, dtype=np.float32),
-                       np.arange(H, dtype=np.float32), indexing='xy')
-    dirs = np.stack([(i-W*.5)/focal, -(j-H*.5)/focal, -np.ones_like(i)], -1)
-    k = dirs[..., np.newaxis, :] * c2w[:3, :3]
-    rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3, :3], -1)
-    rays_o = np.broadcast_to(c2w[:3, -1], np.shape(rays_d))
-    return rays_o, rays_d
+
 
 
 def positional_encoding(p: int, L: int) -> torch.Tensor:
@@ -64,7 +56,7 @@ def positional_encoding(p: int, L: int) -> torch.Tensor:
     L - dimension for returned vector
     gamma - a vector with 2L dimension
     """
-    p = p.detach().numpy()
+    p = p.cpu().detach().numpy()
     twos_power = np.array([i for i in range(L)])
     index = np.array([j for i in range(L) for j in (i, L-1+i)])
     temp = np.dot(p[..., None],((2^twos_power)*np.pi).reshape(-1,1).T)
@@ -87,15 +79,14 @@ def batchify(x, batch_size: int =  1024 * 8) -> torch.Tensor:
     return [x[i : i + batch_size] for i in range(0, x.shape[0], batch_size)]
 
 def sample(input, weight, num_samples: int = 64):
-    # normalise weights 
+    """ Copied from implementation of NerF cited in paper. 
+    """
     weights = weight  + 1e-5
     pdf = weights / torch.sum(weights, dim=-1, keepdim=True)
     cdf = torch.cumsum(pdf, dim=-1)
     cdf = torch.cat(
         [torch.zeros_like(cdf[..., :1]), cdf], dim=-1
-    )  # (batchsize, len(bins))
-
-    # Take uniform samples
+    ) 
 
     u = torch.linspace(
         0.0, 1.0, steps=num_samples, dtype=weights.dtype, device=weights.device
@@ -122,6 +113,7 @@ def sample(input, weight, num_samples: int = 64):
     return samples
 
 def run_nerf_for_model(model, x, direction):
+    """Runs specified model given x and direction"""
     #print(x.shape, direction.shape)
     gamma_x = positional_encoding(x, constants.EMBEDD_X)
     gamma_x=gamma_x.reshape((*(gamma_x.shape[:2]),-1))
@@ -138,79 +130,79 @@ def run_nerf_for_model(model, x, direction):
         T0, T1 = torch.split(i, [temp0, temp1], dim=-1)
         batch_x.append(T0)
         batch_d.append(T1)
-    preds = [model(batch_x[i].double(), batch_d[i].double()) for i in range(len(batches))]
+    preds = [model(batch_x[i].double().cuda(), batch_d[i].double().cuda()) for i in range(len(batches))]
     radiance_field = torch.cat(preds, dim=0)
     radiance_field = radiance_field.reshape(list(x.shape[:-1]) + [radiance_field.shape[-1]])
     return radiance_field
 
-def volume_render_radiance_field(
-    radiance_field,
-    depth_values,
-    ray_directions,
-    radiance_field_noise_std=0.0,
-    white_background=False,
-):
-    # TESTED
-    one_e_10 = torch.tensor(
-        [1e10], dtype=ray_directions.dtype, device=ray_directions.device
-    )
-    dists = torch.cat(
-        (
-            depth_values[..., 1:] - depth_values[..., :-1],
-            one_e_10.expand(depth_values[..., :1].shape),
-        ),
-        dim=-1,
-    )
-    dists = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
+# def volume_render_radiance_field(
+#     radiance_field,
+#     depth_values,
+#     ray_directions,
+#     radiance_field_noise_std=0.0,
+#     white_background=False,
+# ):
+#     # TESTED
+#     one_e_10 = torch.tensor(
+#         [1e10], dtype=ray_directions.dtype, device=ray_directions.device
+#     )
+#     dists = torch.cat(
+#         (
+#             depth_values[..., 1:] - depth_values[..., :-1],
+#             one_e_10.expand(depth_values[..., :1].shape),
+#         ),
+#         dim=-1,
+#     )
+#     dists = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
 
-    rgb = torch.sigmoid(radiance_field[..., :3])
-    noise = 0.0
-    if radiance_field_noise_std > 0.0:
-        noise = (
-            torch.randn(
-                radiance_field[..., 3].shape,
-                dtype=radiance_field.dtype,
-                device=radiance_field.device,
-            )
-            * radiance_field_noise_std
-        )
-        # noise = noise.to(radiance_field)
-    sigma_a = torch.nn.functional.relu(radiance_field[..., 3] + noise)
-    alpha = 1.0 - torch.exp(-sigma_a * dists)
-    weights = alpha * cumprod_exclusive(1.0 - alpha + 1e-10)
+#     rgb = torch.sigmoid(radiance_field[..., :3])
+#     noise = 0.0
+#     if radiance_field_noise_std > 0.0:
+#         noise = (
+#             torch.randn(
+#                 radiance_field[..., 3].shape,
+#                 dtype=radiance_field.dtype,
+#                 device=radiance_field.device,
+#             )
+#             * radiance_field_noise_std
+#         )
+#         # noise = noise.to(radiance_field)
+#     sigma_a = torch.nn.functional.relu(radiance_field[..., 3] + noise)
+#     alpha = 1.0 - torch.exp(-sigma_a * dists)
+#     weights = alpha * cumprod_exclusive(1.0 - alpha + 1e-10)
 
-    rgb_map = weights[..., None] * rgb
-    rgb_map = rgb_map.sum(dim=-2)
-    depth_map = weights * depth_values
-    depth_map = depth_map.sum(dim=-1)
-    # depth_map = (weights * depth_values).sum(dim=-1)
-    acc_map = weights.sum(dim=-1)
-    disp_map = 1.0 / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / acc_map)
+#     rgb_map = weights[..., None] * rgb
+#     rgb_map = rgb_map.sum(dim=-2)
+#     depth_map = weights * depth_values
+#     depth_map = depth_map.sum(dim=-1)
+#     # depth_map = (weights * depth_values).sum(dim=-1)
+#     acc_map = weights.sum(dim=-1)
+#     disp_map = 1.0 / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / acc_map)
 
-    if white_background:
-        rgb_map = rgb_map + (1.0 - acc_map[..., None])
+#     if white_background:
+#         rgb_map = rgb_map + (1.0 - acc_map[..., None])
 
-    return rgb_map, weights
-def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
-    r"""Mimick functionality of tf.math.cumprod(..., exclusive=True), as it isn't available in PyTorch.
-    Args:
-    tensor (torch.Tensor): Tensor whose cumprod (cumulative product, see `torch.cumprod`) along dim=-1
-      is to be computed.
-    Returns:
-    cumprod (torch.Tensor): cumprod of Tensor along dim=-1, mimiciking the functionality of
-      tf.math.cumprod(..., exclusive=True) (see `tf.math.cumprod` for details).
-    """
-    # TESTED
-    # Only works for the last dimension (dim=-1)
-    dim = -1
-    # Compute regular cumprod first (this is equivalent to `tf.math.cumprod(..., exclusive=False)`).
-    cumprod = torch.cumprod(tensor, dim)
-    # "Roll" the elements along dimension 'dim' by 1 element.
-    cumprod = torch.roll(cumprod, 1, dim)
-    # Replace the first element by "1" as this is what tf.cumprod(..., exclusive=True) does.
-    cumprod[..., 0] = 1.0
+#     return rgb_map, weights
+# def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
+#     r"""Mimick functionality of tf.math.cumprod(..., exclusive=True), as it isn't available in PyTorch.
+#     Args:
+#     tensor (torch.Tensor): Tensor whose cumprod (cumulative product, see `torch.cumprod`) along dim=-1
+#       is to be computed.
+#     Returns:
+#     cumprod (torch.Tensor): cumprod of Tensor along dim=-1, mimiciking the functionality of
+#       tf.math.cumprod(..., exclusive=True) (see `tf.math.cumprod` for details).
+#     """
+#     # TESTED
+#     # Only works for the last dimension (dim=-1)
+#     dim = -1
+#     # Compute regular cumprod first (this is equivalent to `tf.math.cumprod(..., exclusive=False)`).
+#     cumprod = torch.cumprod(tensor, dim)
+#     # "Roll" the elements along dimension 'dim' by 1 element.
+#     cumprod = torch.roll(cumprod, 1, dim)
+#     # Replace the first element by "1" as this is what tf.cumprod(..., exclusive=True) does.
+#     cumprod[..., 0] = 1.0
 
-    return cumprod
+#     return cumprod
 
 def render(radiance_field, depth, dir):
     """Returns rbg map and weights for rays"""
@@ -222,30 +214,33 @@ def render(radiance_field, depth, dir):
     weights = alpha * temp 
     rgb = torch.sigmoid(radiance_field[..., :3])
     rgb= (weights[..., None] * rgb).sum(dim=-2)
-    print(rgb.shape,'hjhjhjhjhj')
+    #print(rgb.shape,'hjhjhjhjhj')
     return rgb, weights # (rgb, weights)
 
 
 def predict_coarse_then_fine(coarse_model, fine_model, origin, direction):
+    """runs coarse model then fine given directions and origins"""
     t = torch.linspace(0., 1., constants.COARSE_NUM, dtype = origin.dtype, device= origin.device)
     batch_size = origin.size(dim=0)
     batch_t = t.expand([batch_size, constants.COARSE_NUM]) #batch_size x COARSE_NUM
     #TODO : implement stratified sampling on <batch_t>
     x = origin[..., None, :] + direction[..., None, :] * batch_t[..., :, None] #batch_size x COARSE_NUM x 3
     coarse_radiance = run_nerf_for_model(coarse_model, x, direction)
-    print(coarse_radiance.shape)
-    coarse, weights = volume_render_radiance_field(coarse_radiance, batch_t, direction)
-    print(coarse.shape)
+    #print(coarse_radiance.shape)
+    coarse, weights = render(coarse_radiance, batch_t, direction)
+    #print(coarse.shape)
     t_samples = sample(0.5*(batch_t[...,1:]+batch_t[...,:-1]), weights[...,1:-1],).detach() #input size is batch_size x (COARSE_NUM -1)
     batch_t, _ = torch.sort(torch.cat((t_samples, batch_t), -1), dim=-1)
     x = origin[..., None, :] + direction[..., None, :] * batch_t[..., :, None]
     fine_radiance = run_nerf_for_model(fine_model, x, direction)
-    fine, _ = volume_render_radiance_field(fine_radiance, batch_t, direction)
+    fine, _ = render(fine_radiance, batch_t, direction)
     return coarse, fine
 
 
 
 # def predict_coarse_then_fine(coarse_model, fine_model, origin_batches, direction_batches):
+#     """ Vectorized version of predict coarse then fine function
+#     """
 #     t = torch.linspace(0., 1., constants.COARSE_NUM, dtype = origin_batches.dtype, device= origin_batches.device)
 #     batch_size = origin_batches.size(dim=0)
 #     num_batches = origin_batches.size(dim=2)
@@ -261,6 +256,7 @@ def predict_coarse_then_fine(coarse_model, fine_model, origin, direction):
 
 
 def one_iteration(coarse_model, fine_model, o, d):
+    """Prepares everything for an iteration given origins and direction"""
     origin, direction = convert_to_ndc(o, d)
     
     origin = torch.reshape(origin, (-1, 3)) #Nx3

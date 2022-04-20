@@ -25,23 +25,26 @@ def run(epoch=1000, batch_size=64):
         2. Coarse and fine networks are the same
 
     """
+    torch.cuda.empty_cache()
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
     data = np.load('tiny_nerf_data.npz')
     images = data['images']
     poses = data['poses']
     focal = data['focal']
     psnrs = []
-    print(images.shape)
+    
+    #print(images.shape)
     num_of_images, H, W= images.shape[0:3]
-    testimg, testpose = torch.from_numpy(images[101]), poses[101]
-    print(testimg.shape)
+    testimg, testpose = torch.from_numpy(images[101]).to(device), poses[101]
+    #print(testimg.shape)
     images = images[:100,...,:3]
     poses = poses[:100]
     iternums = []
+    shape_img = testimg.shape
     #TODO: Load data here using load_data
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+
     rays_o, rays_d = extras.ray(H, W, focal, torch.from_numpy(testpose))
     images = torch.from_numpy(images)
     poses = torch.from_numpy(poses)
@@ -61,11 +64,13 @@ def run(epoch=1000, batch_size=64):
         img_target = images[img_idx].to(device)[0]
         pose_target = poses[img_idx, :4, :4].to(device)
         ray_origins, ray_directions = extras.ray(H, W, focal, pose_target)
+        ray_origins, ray_directions = ray_origins.to(device), ray_directions.to(device)
         c, f = extras.one_iteration(coarse, fine, ray_origins, ray_directions)
-        c,f = c.reshape(100,100,3), f.reshape(100,100,3)
+        c,f = c.reshape(shape_img).to(device), f.reshape(shape_img).to(device)
         loss  = torch.nn.functional.mse_loss(c.double(), img_target.double()).double() + torch.nn.functional.mse_loss(f.double(), img_target.double()).double()
         loss.backward()
         psnr = -10 * np.log10(max(loss.item(), 1e-5))
+        print('training loss = ', loss)
         optimizer.step()
         optimizer.zero_grad()
         if i%25==0:
@@ -75,21 +80,21 @@ def run(epoch=1000, batch_size=64):
             # Render the holdout view for logging
             
             rgb, rgb2 = extras.one_iteration(coarse, fine, rays_o, rays_d)
-            rgb = rgb.reshape(100,100,3)
-            print(rgb.shape, testimg.shape)
+            rgb = rgb.reshape(100,100,3).to(device)
+            #print(rgb.shape, testimg.shape)
             loss = torch.nn.functional.mse_loss(rgb, testimg)
             psnr = -10 * np.log10(max(loss.item(), 1e-5))
-            psnrs.append(psnr)
-            iternums.append(i)
-            
-            plt.figure(figsize=(10,4))
-            plt.subplot(121)
-            plt.imshow(rgb.detach().numpy())
-            plt.title(f'Iteration: {i}')
-            plt.subplot(122)
-            plt.plot(iternums, psnrs)
-            plt.title('PSNR')
-            plt.show()
+            print('validation loss = ', psnr)
+            #psnrs.append(psnr)
+            #iternums.append(i)
+            #plt.figure(figsize=(10,4))
+            #plt.subplot(121)
+            #plt.imshow(rgb.cpu().detach().numpy())
+            #plt.title(f'Iteration: {i}')
+            #plt.subplot(122)
+            #plt.plot(iternums, psnrs)
+            #plt.title('PSNR')
+            #plt.show()
 
 if __name__ == "__main__":
     run()
